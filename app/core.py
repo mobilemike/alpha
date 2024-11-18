@@ -8,7 +8,7 @@ import google.generativeai as genai
 import httpx
 import structlog
 from fastapi import Body, FastAPI, Request, Response
-from pydantic import Field, HttpUrl, SecretStr
+from pydantic import AliasChoices, Field, HttpUrl, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from starlette.background import BackgroundTask
 from typing_extensions import Annotated
@@ -25,7 +25,9 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env")
 
-    google_ai_api_key: SecretStr = Field(validation_alias="GOOGLE_AI_PAID_API_KEY")
+    google_ai_api_key: SecretStr = Field(
+        validation_alias=AliasChoices("GOOGLE_AI_API_KEY", "GOOGLE_AI_PAID_API_KEY"),
+    )
     bb_url: HttpUrl
     bb_password: SecretStr
     environment: str
