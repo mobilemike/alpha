@@ -150,7 +150,16 @@ async def post_webhook(
     # Check if this is a control message
     if isinstance(payload, WebhookNewMessage):
         text: str = payload.data.text.strip().lower()
-        if settings.env == "production":
+        if text == "alpha off":
+            if settings.env == "production":
+                app.state.webhook.processing_active = False
+            send_message_to_bb(payload, "Webhook processing disabled")
+            return "OK"
+        if text == "alpha on":
+            if settings.env == "production":
+                app.state.webhook.processing_active = True
+            send_message_to_bb(payload, "Webhook processing enabled")
+            return "OK"
             if text == "alpha off":
                 app.state.webhook.processing_active = False
                 send_message_to_bb(payload, "Webhook processing disabled")
