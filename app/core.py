@@ -136,8 +136,36 @@ def send_message_to_bb(payload: WebhookNewMessage, message: str) -> None:
     log.info("Message sent", response=response)
 
 
+def handle_new_message(payload: WebhookNewMessage) -> str:
+    """Handle incoming new message webhooks."""
+    text: str = payload.data.text.strip().lower()
+
+    # Handle control messages
+    if text == "alpha off":
+        if settings.env == "production":
+            app.state.webhook.processing_active = False
+        send_message_to_bb(payload, "Webhook processing disabled")
+        return "OK"
+    if text == "alpha on":
+        if settings.env == "production":
+            app.state.webhook.processing_active = True
+        send_message_to_bb(payload, "Webhook processing enabled")
+        return "OK"
+
+    # Process regular messages
+    if not app.state.webhook.processing_active:
+        return "OK"
+
+    if payload.data.is_from_me:
+        return "OK"
+
+    message: str = generate_reply(payload.data.text)
+    send_message_to_bb(payload, message)
+    return "OK"
+
+
 @app.post("/webhook")
-async def post_webhook(
+def post_webhook(
     payload: Annotated[
         WebhookNewMessage | WebhookTypingIndicator,
         Body(
@@ -146,42 +174,14 @@ async def post_webhook(
         ),
     ],
 ) -> str:
-    """Incomming webhooks from BlueBubbles."""
-    # Check if this is a control message
+    """Incoming webhooks from BlueBubbles."""
     if isinstance(payload, WebhookNewMessage):
-        text: str = payload.data.text.strip().lower()
-        if text == "alpha off":
-            if settings.env == "production":
-                app.state.webhook.processing_active = False
-            send_message_to_bb(payload, "Webhook processing disabled")
-            return "OK"
-        if text == "alpha on":
-            if settings.env == "production":
-                app.state.webhook.processing_active = True
-            send_message_to_bb(payload, "Webhook processing enabled")
-            return "OK"
-            if text == "alpha off":
-                app.state.webhook.processing_active = False
-                send_message_to_bb(payload, "Webhook processing disabled")
-                return "OK"
-            if text == "alpha on":
-                app.state.webhook.processing_active = True
-                send_message_to_bb(payload, "Webhook processing enabled")
-                return "OK"
+        return handle_new_message(payload)
 
-        # Only process regular messages if enabled
-        if not app.state.webhook.processing_active:
-            return "OK"
-
-        log.info("New message", payload=payload)
-        if payload.data.is_from_me:
-            return "OK"
-        message: str = generate_reply(payload.data.text)
-        send_message_to_bb(payload, message)
-
-    elif isinstance(payload, WebhookTypingIndicator):
-        if not app.state.webhook.processing_active:
-            return "OK"
+    if (
+        isinstance(payload, WebhookTypingIndicator)
+        and app.state.webhook.processing_active
+    ):
         log.info("User is typing", payload=payload)
 
     return "OK"
