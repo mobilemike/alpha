@@ -104,7 +104,7 @@ This project creates an AI chat bot named Alpha that can:
     GOOGLE_AI_API_KEY=<your-google-ai-api-key>
     BB_URL=<your-bluebubbles-server-url>
     BB_PASSWORD=<your-bluebubbles-password>
-    ENVIRONMENT=<development/production>
+    ENV=<development/production>
 
 ## Usage
 

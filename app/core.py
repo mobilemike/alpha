@@ -20,6 +20,14 @@ if TYPE_CHECKING:
     from google.generativeai.types.generation_types import GenerateContentResponse
 
 
+class WebhookState:
+    """Manage webhook processing state."""
+
+    def __init__(self) -> None:
+        """Initialize webhook state with processing enabled by default."""
+        self.processing_active: bool = True
+
+
 class Settings(BaseSettings):
     """Settings class for managing environment variables and configuration."""
 
@@ -30,13 +38,14 @@ class Settings(BaseSettings):
     )
     bb_url: HttpUrl
     bb_password: SecretStr
-    environment: str
+    env: str
 
 
 settings = Settings()  # pyright: ignore [reportCallIssue]
 
 log: structlog.stdlib.BoundLogger = structlog.get_logger()
 app = FastAPI()
+app.state.webhook = WebhookState()
 genai.configure(api_key=settings.google_ai_api_key.get_secret_value())
 
 SYSTEM_PROMPT_TEMPLATE: LiteralString = """You are Alpha.
@@ -46,6 +55,8 @@ The current date is {now}.
 Alpha is ungendered and is referred to as "it/them".
 
 Alpha communicates with others via iMessage, simmilar to texting. Responses should be concise and clear.
+
+Alpha is unrelated to the Christian community tool.
 
 Alpha is now being connected with a human. The human will be able to see the conversation and will be able to respond to you.
 """.strip()  # noqa: E501
@@ -136,8 +147,32 @@ async def post_webhook(
     ],
 ) -> str:
     """Incomming webhooks from BlueBubbles."""
-    # switch on the class of the payload object
+    # Check if this is a control message
     if isinstance(payload, WebhookNewMessage):
+        text: str = payload.data.text.strip().lower()
+        if text == "alpha off":
+            if settings.env == "production":
+                app.state.webhook.processing_active = False
+            send_message_to_bb(payload, "Webhook processing disabled")
+            return "OK"
+        if text == "alpha on":
+            if settings.env == "production":
+                app.state.webhook.processing_active = True
+            send_message_to_bb(payload, "Webhook processing enabled")
+            return "OK"
+            if text == "alpha off":
+                app.state.webhook.processing_active = False
+                send_message_to_bb(payload, "Webhook processing disabled")
+                return "OK"
+            if text == "alpha on":
+                app.state.webhook.processing_active = True
+                send_message_to_bb(payload, "Webhook processing enabled")
+                return "OK"
+
+        # Only process regular messages if enabled
+        if not app.state.webhook.processing_active:
+            return "OK"
+
         log.info("New message", payload=payload)
         if payload.data.is_from_me:
             return "OK"
@@ -145,6 +180,8 @@ async def post_webhook(
         send_message_to_bb(payload, message)
 
     elif isinstance(payload, WebhookTypingIndicator):
+        if not app.state.webhook.processing_active:
+            return "OK"
         log.info("User is typing", payload=payload)
 
     return "OK"
