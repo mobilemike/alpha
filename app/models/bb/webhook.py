@@ -2,6 +2,7 @@
 
 from datetime import datetime
 from typing import Literal
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -20,7 +21,7 @@ class Chat(BaseModel):
     """Chat model."""
 
     original_rowid: int = Field(alias="originalROWID")
-    guid: str
+    guid: UUID
     style: int
     chat_identifier: str = Field(alias="chatIdentifier")
     is_archived: bool = Field(alias="isArchived")
@@ -39,7 +40,7 @@ class Attachememt(BaseModel):
     """Attachment model."""
 
     original_rowid: int = Field(alias="originalROWID")
-    guid: str
+    guid: UUID
     uti: str
     mime_type: str = Field(alias="mimeType")
     transfer_name: str = Field(alias="transferName")
@@ -53,7 +54,7 @@ class WebhookNewMessageData(BaseModel):
     """Webhook data model."""
 
     original_rowid: int = Field(alias="originalROWID")
-    guid: str
+    guid: UUID
     text: str
     attributed_body: str | None = Field(alias="attributedBody")
     handle: Handle
