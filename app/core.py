@@ -1,19 +1,18 @@
 """Core logic."""
 
-import uuid
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, Literal, LiteralString
+from typing import TYPE_CHECKING, LiteralString
 
 import google.generativeai as genai
 import httpx
 import structlog
-from fastapi import Body, FastAPI, Request, Response
+from fastapi import Body, FastAPI
 from pydantic import AliasChoices, Field, HttpUrl, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from starlette.background import BackgroundTask
 from typing_extensions import Annotated
 from zoneinfo import ZoneInfo
 
+from app.models.bb.api import Text
 from app.models.bb.webhook import WebhookNewMessage, WebhookTypingIndicator
 
 if TYPE_CHECKING:
@@ -68,26 +67,6 @@ def log_info(req_body: bytes, res_body: bytes) -> None:
     log.debug("Response", body=res_body)
 
 
-# @app.middleware("http")
-async def logging_middleware(request: Request, call_next: Callable) -> Response:
-    """Log incoming and outgoing requests."""
-    req_body: bytes = await request.body()
-    response: Any = await call_next(request)
-
-    res_body: Literal[b""] = b""
-    async for chunk in response.body_iterator:
-        res_body += chunk
-
-    task = BackgroundTask(log_info, req_body, res_body)
-    return Response(
-        content=res_body,
-        status_code=response.status_code,
-        headers=dict(response.headers),
-        media_type=response.media_type,
-        background=task,
-    )
-
-
 def system_prompt() -> str:
     """Generate a system prompt."""
     # format the system prompt with the current date and time
@@ -126,13 +105,11 @@ def send_message_to_bb(payload: WebhookNewMessage, message: str) -> None:
     """Send a message to BlueBubbles."""
     url: str = f"{settings.bb_url}/message/text"
     params: dict[str, str] = {"password": settings.bb_password.get_secret_value()}
-    data: dict[str, str] = {
-        "method": "private-api",
-        "chatGuid": payload.data.chats[0].guid,
-        "tempGuid": str(uuid.uuid4()),
-        "message": message,
-    }
-    response: httpx.Response = httpx.post(url, params=params, json=data)
+    json_data: str = Text(
+        chat_guid=payload.data.chats[0].guid,
+        message=message,
+    ).model_dump_json()
+    response: httpx.Response = httpx.post(url, params=params, json=json_data)
     log.info("Message sent", response=response)
 
 
