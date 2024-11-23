@@ -38,7 +38,7 @@ class AttachementMetadata(BaseModel):
 
     model_config = ConfigDict(alias_generator=camelize, populate_by_name=True)
 
-    size: int
+    size: int | None
     height: int
     width: int
 
@@ -133,3 +133,21 @@ class WebhookTypingIndicator(BaseModel):
 
     type: Literal["typing-indicator"]
     data: WebhookTypingIndicatorData
+
+
+class WebhookChatReadStatusChangedData(BaseModel):
+    """Webhook data model for chat read status changed."""
+
+    model_config = ConfigDict(alias_generator=camelize, populate_by_name=True)
+
+    chat_guid: str
+    read: bool
+
+
+class WebhookChatReadStatusChanged(BaseModel):
+    """Webhook model for chat read status changed."""
+
+    model_config = ConfigDict(alias_generator=camelize, populate_by_name=True)
+
+    type: Literal["chat-read-status-changed"]
+    data: WebhookChatReadStatusChangedData
