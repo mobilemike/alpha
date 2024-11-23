@@ -6,14 +6,23 @@ from typing import TYPE_CHECKING, LiteralString
 import google.generativeai as genai
 import httpx
 import structlog
-from fastapi import Body, FastAPI
+from fastapi import Body, FastAPI, Request
+from fastapi.exception_handlers import (
+    request_validation_exception_handler,
+)
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, Field, HttpUrl, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing_extensions import Annotated
 from zoneinfo import ZoneInfo
 
 from app.models.bb.api import Text
-from app.models.bb.webhook import WebhookNewMessage, WebhookTypingIndicator
+from app.models.bb.webhook import (
+    WebhookNewMessage,
+    WebhookTypingIndicator,
+    WebhookUpdatedMessage,
+)
 
 if TYPE_CHECKING:
     from google.generativeai.types.generation_types import GenerateContentResponse
@@ -61,10 +70,14 @@ Alpha is now being connected with a human. The human will be able to see the con
 """.strip()  # noqa: E501
 
 
-def log_info(req_body: bytes, res_body: bytes) -> None:
-    """Log the incoming and outgoing requests."""
-    log.debug("Request", body=req_body)
-    log.debug("Response", body=res_body)
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(
+    request: Request,
+    exc: RequestValidationError,
+) -> JSONResponse:
+    """Handle validation errors."""
+    log.error("Validation error", detail=exc.errors(), body=exc.body)
+    return await request_validation_exception_handler(request, exc)
 
 
 def system_prompt() -> str:
@@ -105,11 +118,17 @@ def send_message_to_bb(payload: WebhookNewMessage, message: str) -> None:
     """Send a message to BlueBubbles."""
     url: str = f"{settings.bb_url}/message/text"
     params: dict[str, str] = {"password": settings.bb_password.get_secret_value()}
-    json_data: str = Text(
+    data: dict[str, str | None] = Text(
         chat_guid=payload.data.chats[0].guid,
         message=message,
-    ).model_dump_json()
-    response: httpx.Response = httpx.post(url, params=params, json=json_data)
+    ).model_dump(by_alias=True, exclude_none=True, mode="json")
+    log.debug(
+        "Sending message to BlueBubbles",
+        url=url,
+        params=params,
+        json_data=data,
+    )
+    response: httpx.Response = httpx.post(url, params=params, json=data)
     log.info("Message sent", response=response)
 
 
@@ -144,7 +163,7 @@ def handle_new_message(payload: WebhookNewMessage) -> str:
 @app.post("/webhook")
 def post_webhook(
     payload: Annotated[
-        WebhookNewMessage | WebhookTypingIndicator,
+        WebhookNewMessage | WebhookTypingIndicator | WebhookUpdatedMessage,
         Body(
             ...,
             discriminator="type",
@@ -159,6 +178,9 @@ def post_webhook(
         isinstance(payload, WebhookTypingIndicator)
         and app.state.webhook.processing_active
     ):
-        log.info("User is typing", payload=payload)
+        log.info("Typing indicator", is_typing=payload.data.display, payload=payload)
+
+    if isinstance(payload, WebhookUpdatedMessage) and app.state.webhook.processing_active:
+        log.info("Updated message", payload=payload)
 
     return "OK"
