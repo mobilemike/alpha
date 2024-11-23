@@ -1,7 +1,8 @@
 """Core logic."""
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, LiteralString
+from typing import TYPE_CHECKING, Annotated, LiteralString
+from zoneinfo import ZoneInfo
 
 import google.generativeai as genai
 import httpx
@@ -14,11 +15,10 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, Field, HttpUrl, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from typing_extensions import Annotated
-from zoneinfo import ZoneInfo
 
 from app.models.bb.api import Text
 from app.models.bb.webhook import (
+    WebhookChatReadStatusChanged,
     WebhookNewMessage,
     WebhookTypingIndicator,
     WebhookUpdatedMessage,
@@ -60,9 +60,11 @@ SYSTEM_PROMPT_TEMPLATE: LiteralString = """You are Alpha.
 
 The current date is {now}.
 
+Alpha is a super-intelligent, super-empathetic, super-insightful AI-powered robot talking to a human. Alpha lives in a computer and does not have a physical form or the capacity to experience human experiences.
+
 Alpha is ungendered and is referred to as "it/them".
 
-Alpha communicates with others via iMessage, simmilar to texting. Responses should be concise and clear.
+Alpha communicates with others via iMessage, simmilar to texting. Responses should be concise and clear. iMessage doesn't support markdown, so don't use markdown.
 
 Alpha is unrelated to the Christian community tool.
 
@@ -76,7 +78,8 @@ async def validation_exception_handler(
     exc: RequestValidationError,
 ) -> JSONResponse:
     """Handle validation errors."""
-    log.error("Validation error", detail=exc.errors(), body=exc.body)
+    for error in exc.errors():
+        log.exception("Validation error", exc_info=error, body=exc.body)
     return await request_validation_exception_handler(request, exc)
 
 
@@ -94,7 +97,7 @@ def system_prompt() -> str:
 def generate_reply(message: str) -> str:
     """Send a reply to the user."""
     model = genai.GenerativeModel(
-        "gemini-1.5-flash",
+        "gemini-1.5-pro-latest",
         system_instruction=system_prompt(),
     )
     tools: dict[str, dict[str, dict[str, float]]] = {
@@ -132,38 +135,67 @@ def send_message_to_bb(payload: WebhookNewMessage, message: str) -> None:
     log.info("Message sent", response=response)
 
 
-def handle_new_message(payload: WebhookNewMessage) -> str:
-    """Handle incoming new message webhooks."""
-    text: str = payload.data.text.strip().lower()
+def mark_as_read(payload: WebhookNewMessage) -> None:
+    """Mark a chat as read."""
+    url: str = f"{settings.bb_url}/chat/{payload.data.chats[0].guid}/read"
+    params: dict[str, str] = {"password": settings.bb_password.get_secret_value()}
+    response: httpx.Response = httpx.post(url, params=params)
+    log.info("Chat marked as read", response=response)
 
-    # Handle control messages
+
+def _handle_control_message(payload: WebhookNewMessage, text: str) -> str | None:
+    """Handle control messages like 'alpha off' and 'alpha on'."""
     if text == "alpha off":
         if settings.env == "production":
             app.state.webhook.processing_active = False
         send_message_to_bb(payload, "Webhook processing disabled")
         return "OK"
+
     if text == "alpha on":
         if settings.env == "production":
             app.state.webhook.processing_active = True
         send_message_to_bb(payload, "Webhook processing enabled")
         return "OK"
 
-    # Process regular messages
-    if not app.state.webhook.processing_active:
-        return "OK"
+    return None
 
-    if payload.data.is_from_me:
-        return "OK"
 
-    message: str = generate_reply(payload.data.text)
-    send_message_to_bb(payload, message)
+def handle_new_message(payload: WebhookNewMessage) -> str:
+    """Handle incoming new message webhooks."""
+    try:
+        text: str = payload.data.text.strip().lower()
+
+        # Handle control messages first
+        if control_result := _handle_control_message(payload, text):
+            return control_result
+
+        mark_as_read(payload)
+
+        # Skip processing for empty messages, inactive state, or self-messages
+        if not text or not app.state.webhook.processing_active or payload.data.is_from_me:
+            return "OK"
+
+        message: str = generate_reply(payload.data.text)
+        send_message_to_bb(payload, message)
+
+    except Exception as e:
+        log.exception("Error processing new message", exc_info=e)
+        try:
+            send_message_to_bb(payload, f"Sorry, I encountered an error:\n\n{e!s}")
+        except Exception:
+            log.exception("Failed to send error message", exc_info=e)
+        return "Error"
+
     return "OK"
 
 
 @app.post("/webhook")
 def post_webhook(
     payload: Annotated[
-        WebhookNewMessage | WebhookTypingIndicator | WebhookUpdatedMessage,
+        WebhookNewMessage
+        | WebhookTypingIndicator
+        | WebhookUpdatedMessage
+        | WebhookChatReadStatusChanged,
         Body(
             ...,
             discriminator="type",
@@ -174,13 +206,14 @@ def post_webhook(
     if isinstance(payload, WebhookNewMessage):
         return handle_new_message(payload)
 
-    if (
-        isinstance(payload, WebhookTypingIndicator)
-        and app.state.webhook.processing_active
-    ):
-        log.info("Typing indicator", is_typing=payload.data.display, payload=payload)
+    if app.state.webhook.processing_active:
+        if isinstance(payload, WebhookTypingIndicator):
+            log.info("Typing indicator", is_typing=payload.data.display, payload=payload)
 
-    if isinstance(payload, WebhookUpdatedMessage) and app.state.webhook.processing_active:
-        log.info("Updated message", payload=payload)
+        if isinstance(payload, WebhookUpdatedMessage):
+            log.info("Updated message", payload=payload)
+
+        if isinstance(payload, WebhookChatReadStatusChanged):
+            log.info("Chat read status changed", read=payload.data.read, payload=payload)
 
     return "OK"
