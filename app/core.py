@@ -16,8 +16,9 @@ from fastapi.responses import JSONResponse
 from pydantic import AliasChoices, Field, HttpUrl, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from app.models.bb.api import Text
-from app.models.bb.webhook import (
+from app.clients.bb.message import send_text
+from app.models.bb.api import (
+    Text,
     WebhookChatReadStatusChanged,
     WebhookNewMessage,
     WebhookTypingIndicator,
@@ -58,13 +59,13 @@ genai.configure(api_key=settings.google_ai_api_key.get_secret_value())
 
 SYSTEM_PROMPT_TEMPLATE: LiteralString = """You are Alpha.
 
-The current date is {now}.
+The current date and timeis {now}.
 
 Alpha is a super-intelligent, super-empathetic, super-insightful AI-powered robot talking to a human. Alpha lives in a computer and does not have a physical form or the capacity to experience human experiences.
 
 Alpha is ungendered and is referred to as "it/them".
 
-Alpha communicates with others via iMessage, simmilar to texting. Responses should be concise and clear. iMessage doesn't support markdown, so don't use markdown.
+Alpha communicates with others via iMessage, simmilar to texting. Responses should be concise and clear. Write in plain text; don't use markdown. Occational emojis are allowed.
 
 Alpha is unrelated to the Christian community tool.
 
@@ -89,7 +90,7 @@ def system_prompt() -> str:
     now: str = (
         datetime.now(tz=timezone.utc)
         .astimezone(ZoneInfo("America/New_York"))
-        .strftime("%Y-%m-%d %H:%M:%S")
+        .strftime("%I:%M%p %B, %d %Y")
     )
     return SYSTEM_PROMPT_TEMPLATE.format(now=now)
 
@@ -117,12 +118,12 @@ def generate_reply(message: str) -> str:
     return text
 
 
-def send_message_to_bb(payload: WebhookNewMessage, message: str) -> None:
+def send_message_to_bb(chat_guid: str, message: str) -> None:
     """Send a message to BlueBubbles."""
     url: str = f"{settings.bb_url}/message/text"
     params: dict[str, str] = {"password": settings.bb_password.get_secret_value()}
     data: dict[str, str | None] = Text(
-        chat_guid=payload.data.chats[0].guid,
+        chat_guid=chat_guid,
         message=message,
     ).model_dump(by_alias=True, exclude_none=True, mode="json")
     log.debug(
@@ -135,26 +136,26 @@ def send_message_to_bb(payload: WebhookNewMessage, message: str) -> None:
     log.info("Message sent", response=response)
 
 
-def mark_as_read(payload: WebhookNewMessage) -> None:
+def mark_as_read(chat_guid: str) -> None:
     """Mark a chat as read."""
-    url: str = f"{settings.bb_url}/chat/{payload.data.chats[0].guid}/read"
+    url: str = f"{settings.bb_url}/chat/{chat_guid}/read"
     params: dict[str, str] = {"password": settings.bb_password.get_secret_value()}
     response: httpx.Response = httpx.post(url, params=params)
     log.info("Chat marked as read", response=response)
 
 
-def _handle_control_message(payload: WebhookNewMessage, text: str) -> str | None:
+def _handle_control_message(chat_guid: str, text: str) -> str | None:
     """Handle control messages like 'alpha off' and 'alpha on'."""
     if text == "alpha off":
         if settings.env == "production":
             app.state.webhook.processing_active = False
-        send_message_to_bb(payload, "Webhook processing disabled")
+        send_message_to_bb(chat_guid, "Webhook processing disabled")
         return "OK"
 
     if text == "alpha on":
         if settings.env == "production":
             app.state.webhook.processing_active = True
-        send_message_to_bb(payload, "Webhook processing enabled")
+        send_message_to_bb(chat_guid, "Webhook processing enabled")
         return "OK"
 
     return None
@@ -164,26 +165,30 @@ def handle_new_message(payload: WebhookNewMessage) -> str:
     """Handle incoming new message webhooks."""
     try:
         text: str = payload.data.text.strip().lower()
+        if not payload.data.chats:
+            log.warning("No chat found in payload", payload=payload)
+            return "Error"
+        chat_guid: str = payload.data.chats[0].guid
 
         # Handle control messages first
-        if control_result := _handle_control_message(payload, text):
+        if control_result := _handle_control_message(chat_guid, text):
             return control_result
 
-        mark_as_read(payload)
+        mark_as_read(chat_guid)
 
         # Skip processing for empty messages, inactive state, or self-messages
         if not text or not app.state.webhook.processing_active or payload.data.is_from_me:
             return "OK"
 
         message: str = generate_reply(payload.data.text)
-        send_message_to_bb(payload, message)
+        send_text(chat_guid, message)
 
-    except Exception as e:
-        log.exception("Error processing new message", exc_info=e)
+    except Exception as exc:
+        log.exception("Error processing new message", exc_info=exc)
         try:
-            send_message_to_bb(payload, f"Sorry, I encountered an error:\n\n{e!s}")
+            send_message_to_bb(chat_guid, f"Sorry, I encountered an error:\n\n{exc!s}")
         except Exception:
-            log.exception("Failed to send error message", exc_info=e)
+            log.exception("Failed to send error message", exc_info=exc)
         return "Error"
 
     return "OK"
