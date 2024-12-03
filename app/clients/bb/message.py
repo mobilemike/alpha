@@ -7,7 +7,8 @@ import httpx
 from humps import camelize
 from pydantic import UUID4, Field, validate_call
 
-from app.core import log, settings
+from app.logger import log
+from app.settings import settings
 
 
 @validate_call
@@ -77,7 +78,7 @@ def send_text(  # noqa: PLR0913
         {
             "chatGuid": chat_guid,
             "message": message,
-            "tempGuid": temp_guid,
+            "tempGuid": str(temp_guid),
             "method": method,
             "subject": subject,
             "effectId": effect_id,

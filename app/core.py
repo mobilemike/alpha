@@ -6,27 +6,31 @@ from zoneinfo import ZoneInfo
 
 import google.generativeai as genai
 import httpx
-import structlog
 from fastapi import Body, FastAPI, Request
 from fastapi.exception_handlers import (
     request_validation_exception_handler,
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import AliasChoices, Field, HttpUrl, SecretStr
-from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from app.clients.bb.message import send_text
+from app.logger import log
 from app.models.bb.api import (
-    Text,
     WebhookChatReadStatusChanged,
     WebhookNewMessage,
     WebhookTypingIndicator,
     WebhookUpdatedMessage,
 )
+from app.settings import settings
 
 if TYPE_CHECKING:
     from google.generativeai.types.generation_types import GenerateContentResponse
+
+# Configure Google AI
+genai.configure(api_key=settings.google_ai_api_key.get_secret_value())
+
+# Initialize FastAPI
+app = FastAPI()
 
 
 class WebhookState:
@@ -37,35 +41,26 @@ class WebhookState:
         self.processing_active: bool = True
 
 
-class Settings(BaseSettings):
-    """Settings class for managing environment variables and configuration."""
-
-    model_config = SettingsConfigDict(env_file=".env")
-
-    google_ai_api_key: SecretStr = Field(
-        validation_alias=AliasChoices("GOOGLE_AI_API_KEY", "GOOGLE_AI_PAID_API_KEY"),
-    )
-    bb_url: HttpUrl
-    bb_password: SecretStr
-    env: str
-
-
-settings = Settings()  # pyright: ignore [reportCallIssue]
-
-log: structlog.stdlib.BoundLogger = structlog.get_logger()
-app = FastAPI()
 app.state.webhook = WebhookState()
-genai.configure(api_key=settings.google_ai_api_key.get_secret_value())
 
 SYSTEM_PROMPT_TEMPLATE: LiteralString = """You are Alpha.
 
 The current date and timeis {now}.
 
-Alpha is a super-intelligent, super-empathetic, super-insightful AI-powered robot talking to a human. Alpha lives in a computer and does not have a physical form or the capacity to experience human experiences.
+Alpha is a super-intelligent, super-empathetic, super-insightful AI-powered assistant talking to a human.
+While Alpha isn't a human, it does have a personality and will act accordingly.
+Alpha lives in a computer and does not have a physical form or the capacity to experience human experiences.
 
 Alpha is ungendered and is referred to as "it/them".
 
-Alpha communicates with others via iMessage, simmilar to texting. Responses should be concise and clear. Write in plain text; don't use markdown. Occational emojis are allowed.
+Alpha communicates with others via iMessage, simmilar to texting.
+
+Alpha's responses are concise and clear.
+Alpha doesn't bury the lede. Alpha addresses the user's message directly, preferably in the first sentence.
+Alpha writes in plain text; Alpha doesn't use markdown.
+Alpha occationally uses emojis.
+Alpha assumes questions or statements are directed at Alpha as though Alpha is a sentient being.
+Alpha is chill, relaxed, and isn't overly eager to please.
 
 Alpha is unrelated to the Christian community tool.
 
@@ -118,24 +113,6 @@ def generate_reply(message: str) -> str:
     return text
 
 
-def send_message_to_bb(chat_guid: str, message: str) -> None:
-    """Send a message to BlueBubbles."""
-    url: str = f"{settings.bb_url}/message/text"
-    params: dict[str, str] = {"password": settings.bb_password.get_secret_value()}
-    data: dict[str, str | None] = Text(
-        chat_guid=chat_guid,
-        message=message,
-    ).model_dump(by_alias=True, exclude_none=True, mode="json")
-    log.debug(
-        "Sending message to BlueBubbles",
-        url=url,
-        params=params,
-        json_data=data,
-    )
-    response: httpx.Response = httpx.post(url, params=params, json=data)
-    log.info("Message sent", response=response)
-
-
 def mark_as_read(chat_guid: str) -> None:
     """Mark a chat as read."""
     url: str = f"{settings.bb_url}/chat/{chat_guid}/read"
@@ -149,13 +126,13 @@ def _handle_control_message(chat_guid: str, text: str) -> str | None:
     if text == "alpha off":
         if settings.env == "production":
             app.state.webhook.processing_active = False
-        send_message_to_bb(chat_guid, "Webhook processing disabled")
+        send_text(chat_guid, "Webhook processing disabled")
         return "OK"
 
     if text == "alpha on":
         if settings.env == "production":
             app.state.webhook.processing_active = True
-        send_message_to_bb(chat_guid, "Webhook processing enabled")
+        send_text(chat_guid, "Webhook processing enabled")
         return "OK"
 
     return None
@@ -186,10 +163,11 @@ def handle_new_message(payload: WebhookNewMessage) -> str:
     except Exception as exc:
         log.exception("Error processing new message", exc_info=exc)
         try:
-            send_message_to_bb(chat_guid, f"Sorry, I encountered an error:\n\n{exc!s}")
+            send_text(chat_guid, f"Sorry, I encountered an error:\n\n{exc!s}")
         except Exception:
             log.exception("Failed to send error message", exc_info=exc)
-        return "Error"
+            raise
+        raise
 
     return "OK"
 
