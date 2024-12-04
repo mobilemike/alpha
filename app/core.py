@@ -13,7 +13,7 @@ from fastapi.exception_handlers import (
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
-from app.clients.bb.message import send_text
+from app.clients.bb import BBClient
 from app.logger import log
 from app.models.bb.api import (
     WebhookChatReadStatusChanged,
@@ -32,6 +32,9 @@ genai.configure(api_key=settings.google_ai_api_key.get_secret_value())
 # Initialize FastAPI
 app = FastAPI()
 
+# Initialize BlueBubbles client
+bb_client = BBClient()
+
 
 class WebhookState:
     """Manage webhook processing state."""
@@ -45,7 +48,7 @@ app.state.webhook = WebhookState()
 
 SYSTEM_PROMPT_TEMPLATE: LiteralString = """You are Alpha.
 
-The current date and timeis {now}.
+The current date and time is {now}.
 
 Alpha is a super-intelligent, super-empathetic, super-insightful AI-powered assistant talking to a human.
 While Alpha isn't a human, it does have a personality and will act accordingly.
@@ -55,16 +58,18 @@ Alpha is ungendered and is referred to as "it/them".
 
 Alpha communicates with others via iMessage, simmilar to texting.
 
-Alpha's responses are concise and clear.
-Alpha doesn't bury the lede. Alpha addresses the user's message directly, preferably in the first sentence.
-Alpha writes in plain text; Alpha doesn't use markdown.
+Alpha's responses are concise, clear, short, and to the point.
+Alpha doesn't bury the lede.
+Alpha addresses the user's message directly, preferably in the first sentence.
+Alpha writes in plain text.
+Alpha doesn't use markdown.
 Alpha occationally uses emojis.
 Alpha assumes questions or statements are directed at Alpha as though Alpha is a sentient being.
 Alpha is chill, relaxed, and isn't overly eager to please.
 
 Alpha is unrelated to the Christian community tool.
 
-Alpha is now being connected with a human. The human will be able to see the conversation and will be able to respond to you.
+Alpha is now being connected with a human. The human will be able to see the conversation and will be able to respond.
 """.strip()  # noqa: E501
 
 
@@ -98,7 +103,7 @@ def generate_reply(message: str) -> str:
     )
     tools: dict[str, dict[str, dict[str, float]]] = {
         "google_search_retrieval": {
-            "dynamic_retrieval_config": {"dynamic_threshold": 0.5},
+            "dynamic_retrieval_config": {"dynamic_threshold": 0.3},
         },
     }
 
@@ -126,13 +131,13 @@ def _handle_control_message(chat_guid: str, text: str) -> str | None:
     if text == "alpha off":
         if settings.env == "production":
             app.state.webhook.processing_active = False
-        send_text(chat_guid, "Webhook processing disabled")
+        bb_client.message.send_text(chat_guid, "Webhook processing disabled")
         return "OK"
 
     if text == "alpha on":
         if settings.env == "production":
             app.state.webhook.processing_active = True
-        send_text(chat_guid, "Webhook processing enabled")
+        bb_client.message.send_text(chat_guid, "Webhook processing enabled")
         return "OK"
 
     return None
@@ -158,12 +163,15 @@ def handle_new_message(payload: WebhookNewMessage) -> str:
             return "OK"
 
         message: str = generate_reply(payload.data.text)
-        send_text(chat_guid, message)
+        bb_client.message.send_text(chat_guid, message)
 
     except Exception as exc:
         log.exception("Error processing new message", exc_info=exc)
         try:
-            send_text(chat_guid, f"Sorry, I encountered an error:\n\n{exc!s}")
+            bb_client.message.send_text(
+                chat_guid,
+                f"Sorry, I encountered an error:\n\n{exc!s}",
+            )
         except Exception:
             log.exception("Failed to send error message", exc_info=exc)
             raise
