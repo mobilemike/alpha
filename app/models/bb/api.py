@@ -51,12 +51,12 @@ class Attachmemt(BaseBBModel):
     original_rowid: int = Field(alias="originalROWID")
     guid: UUID
     uti: str
-    mime_type: str
+    mime_type: str | None = None
     transfer_name: str
     total_bytes: int
     height: int
     width: int
-    metadata: AttachmentMetadata
+    metadata: AttachmentMetadata | None = None
 
 
 class Message(BaseBBModel):
