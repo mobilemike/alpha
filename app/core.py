@@ -1,10 +1,9 @@
 """Core logic."""
 
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Annotated, LiteralString
+from typing import Annotated, LiteralString
 from zoneinfo import ZoneInfo
 
-import google.generativeai as genai
 import httpx
 from fastapi import Body, FastAPI, Request
 from fastapi.exception_handlers import (
@@ -12,6 +11,14 @@ from fastapi.exception_handlers import (
 )
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
+from google import genai
+from google.genai.types import (
+    GenerateContentConfig,
+    GenerateContentResponse,
+    GoogleSearch,
+    SafetySetting,
+    Tool,
+)
 
 from app.clients.bb import BBClient
 from app.logger import log
@@ -23,11 +30,8 @@ from app.models.bb.api import (
 )
 from app.settings import settings
 
-if TYPE_CHECKING:
-    from google.generativeai.types.generation_types import GenerateContentResponse
-
 # Configure Google AI
-genai.configure(api_key=settings.google_ai_api_key.get_secret_value())
+gemini_client = genai.Client(api_key=settings.google_ai_api_key.get_secret_value())
 
 # Initialize FastAPI
 app = FastAPI()
@@ -97,23 +101,50 @@ def system_prompt() -> str:
 
 def generate_reply(message: str) -> str:
     """Send a reply to the user."""
-    model = genai.GenerativeModel(
-        "gemini-2.0-flash-exp",
+    model_id = "gemini-2.0-flash-exp"
+    google_search_tool = Tool(
+        google_search=GoogleSearch(),
+    )
+    safety_settings = [
+        SafetySetting(
+            category="HARM_CATEGORY_HATE_SPEECH",
+            threshold="OFF",
+        ),
+        SafetySetting(
+            category="HARM_CATEGORY_DANGEROUS_CONTENT",
+            threshold="OFF",
+        ),
+        SafetySetting(
+            category="HARM_CATEGORY_HARASSMENT",
+            threshold="OFF",
+        ),
+        SafetySetting(
+            category="HARM_CATEGORY_SEXUALLY_EXPLICIT",
+            threshold="OFF",
+        ),
+        SafetySetting(
+            category="HARM_CATEGORY_CIVIC_INTEGRITY",
+            threshold="OFF",
+        ),
+    ]
+    config = GenerateContentConfig(
+        tools=[google_search_tool],
         system_instruction=system_prompt(),
-    )
-    tools: dict[str, dict[str, dict[str, float]]] = {
-        "google_search_retrieval": {
-            "dynamic_retrieval_config": {"dynamic_threshold": 0.3},
-        },
-    }
-
-    gemini_response: GenerateContentResponse = model.generate_content(
-        message,
-        tools=tools,
-        safety_settings="BLOCK_NONE",
+        response_modalities=["TEXT"],
+        safety_settings=safety_settings,
     )
 
-    text: LiteralString = gemini_response.text.strip()
+    gemini_response: GenerateContentResponse = gemini_client.models.generate_content(
+        model=model_id,
+        contents=message,
+        config=config,
+    )
+
+    text: str | None = gemini_response.text
+    if not text:
+        msg = "No text returned from Gemini"
+        raise ValueError(msg)
+    text = text.strip()
     log.info("Generated text", text=text)
     return text
 
