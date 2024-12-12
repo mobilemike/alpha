@@ -98,7 +98,7 @@ def system_prompt() -> str:
 def generate_reply(message: str) -> str:
     """Send a reply to the user."""
     model = genai.GenerativeModel(
-        "gemini-1.5-pro-latest",
+        "gemini-2.0-flash-exp",
         system_instruction=system_prompt(),
     )
     tools: dict[str, dict[str, dict[str, float]]] = {
